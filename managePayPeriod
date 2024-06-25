@@ -3,6 +3,7 @@ function onOpen() {
   ui.createMenu('Timesheets')
     .addItem('Generate New Pay Period', 'generateNewPayPeriod')
     .addItem('Push to Timesheet', 'pushToTimesheet')
+    .addItem('Save Timesheet', 'saveTimesheet')
     .addToUi();
 }
 
@@ -165,3 +166,52 @@ function findLastPayPeriodStartRow(data) {
   }
   return lastPayPeriodStartRow;
 }
+
+function saveTimesheet() {
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var finalTimeSheet = spreadsheet.getSheetByName('Final Time Sheet');
+  var properties = PropertiesService.getScriptProperties();
+  var dates = JSON.parse(properties.getProperty('latestPayPeriodDates') || '[]');
+  
+  if (dates.length === 0) {
+    SpreadsheetApp.getUi().alert('No pay period data found.');
+    return;
+  }
+  
+  var mostRecentDate = dates[dates.length - 1];
+  var formattedDate = mostRecentDate.replace(/\//g, '');
+  var fileName = `${formattedDate}-timesheet`;
+  
+  var folder = DriveApp.getFoldersByName('TimeSheets').next();
+  
+  // Create a copy of the spreadsheet and remove all sheets except "Final Time Sheet"
+  var tempSpreadsheet = spreadsheet.copy(fileName);
+  var sheets = tempSpreadsheet.getSheets();
+  for (var i = 0; i < sheets.length; i++) {
+    if (sheets[i].getName() !== 'Final Time Sheet') {
+      tempSpreadsheet.deleteSheet(sheets[i]);
+    }
+  }
+  
+  // Export the temp spreadsheet as PDF
+  var pdf = DriveApp.getFileById(tempSpreadsheet.getId()).getAs('application/pdf');
+  pdf.setName(fileName);
+  folder.createFile(pdf);
+  
+  // Delete the temp spreadsheet
+  DriveApp.getFileById(tempSpreadsheet.getId()).setTrashed(true);
+  
+  var subject = `Musicians Timesheet - ${mostRecentDate}`;
+  var body = `Hi Martha,\n\nPlease see attached timesheet for the pay period ending on ${mostRecentDate}.\n\nThanks,\nSharee`;
+  
+  MailApp.sendEmail({
+    to: 'matkinson@secondpres.org',
+    cc: 'sthompson@secondpres.org',
+    subject: subject,
+    body: body,
+    attachments: [pdf]
+  });
+  
+  SpreadsheetApp.getUi().alert('Timesheet saved and emailed successfully.');
+}
+
