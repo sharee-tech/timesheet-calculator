@@ -7,7 +7,9 @@ function onOpen() {
 }
 
 function generateNewPayPeriod() {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Pay Periods');
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var payPeriodsSheet = spreadsheet.getSheetByName('Pay Periods');
+  var finalTimeSheet = spreadsheet.getSheetByName('Final Time Sheet');
   var ui = SpreadsheetApp.getUi();
   var response = ui.prompt('Enter the starting date (MM/DD/YYYY):', ui.ButtonSet.OK_CANCEL);
 
@@ -20,23 +22,30 @@ function generateNewPayPeriod() {
     }
     var dates = getPayPeriodDates(startDate);
 
-    var firstEmptyRow = findFirstEmptyRow(sheet);
+    var firstEmptyRow = findFirstEmptyRow(payPeriodsSheet);
 
     dates.forEach(function(date) {
       var day = date.getDay() === 0 ? 'S' : 'W'; // 'S' for Sunday, 'W' for Wednesday
       var dateFormatted = Utilities.formatDate(date, Session.getScriptTimeZone(), 'MM/dd/yyyy');
 
       var newRow = [null, null, day, dateFormatted, 'MB', 'DF', 'CB', 'EE'];
-      sheet.getRange(firstEmptyRow, 1, 1, 8).setValues([newRow]);
-      sheet.getRange(firstEmptyRow, 1, 1, 2).insertCheckboxes();
+      payPeriodsSheet.getRange(firstEmptyRow, 1, 1, 8).setValues([newRow]);
+      payPeriodsSheet.getRange(firstEmptyRow, 1, 1, 2).insertCheckboxes();
       firstEmptyRow++;
     });
+
+    // Insert dates into Final Time Sheet in multiple locations
+    var formattedDates = dates.map(date => [Utilities.formatDate(date, Session.getScriptTimeZone(), 'MM/dd/yyyy')]);
+    finalTimeSheet.getRange(8, 1, formattedDates.length, 1).setValues(formattedDates);
+    finalTimeSheet.getRange(8, 5, formattedDates.length, 1).setValues(formattedDates);
+    finalTimeSheet.getRange(24, 1, formattedDates.length, 1).setValues(formattedDates);
+    finalTimeSheet.getRange(24, 5, formattedDates.length, 1).setValues(formattedDates);
 
     // Save dates to property store
     var properties = PropertiesService.getScriptProperties();
     properties.setProperty('latestPayPeriodDates', JSON.stringify(dates.map(date => Utilities.formatDate(date, Session.getScriptTimeZone(), 'MM/dd/yyyy'))));
 
-    ui.alert('Pay period dates generated successfully.');
+    ui.alert('Pay period dates generated and added to Final Time Sheet successfully.');
   }
 }
 
@@ -89,6 +98,7 @@ function findFirstEmptyRow(sheet) {
 
 function pushToTimesheet() {
   var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var payPeriodsSheet = spreadsheet.getSheetByName('Pay Periods');
   var finalTimeSheet = spreadsheet.getSheetByName('Final Time Sheet');
 
   // Get dates from property store
@@ -100,12 +110,58 @@ function pushToTimesheet() {
     return;
   }
 
-  // Insert dates into Final Time Sheet in multiple locations
-  var formattedDates = dates.map(date => [date]);
-  finalTimeSheet.getRange(8, 1, formattedDates.length, 1).setValues(formattedDates);
-  finalTimeSheet.getRange(8, 5, formattedDates.length, 1).setValues(formattedDates);
-  finalTimeSheet.getRange(24, 1, formattedDates.length, 1).setValues(formattedDates);
-  finalTimeSheet.getRange(24, 5, formattedDates.length, 1).setValues(formattedDates);
+  // Get corresponding values from columns E, F, G, and H of Pay Periods tab
+  var data = payPeriodsSheet.getDataRange().getValues();
+  var lastPayPeriodStartRow = findLastPayPeriodStartRow(data);
 
-  SpreadsheetApp.getUi().alert('Dates pushed to Final Time Sheet successfully.');
+  if (lastPayPeriodStartRow === -1) {
+    SpreadsheetApp.getUi().alert('No pay period data found.');
+    return;
+  }
+
+  var mbValues = [];
+  var dfValues = [];
+  var cbValues = [];
+  var eeValues = [];
+
+  for (var i = lastPayPeriodStartRow; i < data.length; i++) {
+    if (data[i][2] === 'S' || data[i][2] === 'W') {
+      mbValues.push([data[i][4] === 'MB' ? 1 : 0]);
+      dfValues.push([data[i][5] === 'DF' ? 1 : 0]);
+      cbValues.push([data[i][6] === 'CB' ? 1 : 0]);
+      eeValues.push([data[i][7] === 'EE' ? 1 : 0]);
+    }
+  }
+
+  // Insert values into Final Time Sheet
+  finalTimeSheet.getRange(8, 2, mbValues.length, 1).setValues(mbValues);  // B8
+  finalTimeSheet.getRange(8, 6, dfValues.length, 1).setValues(dfValues);  // F8
+  finalTimeSheet.getRange(24, 2, cbValues.length, 1).setValues(cbValues); // B24
+  finalTimeSheet.getRange(24, 6, eeValues.length, 1).setValues(eeValues); // F24
+
+  // Calculate and insert totals
+  var mbTotal = mbValues.reduce((sum, value) => sum + value[0], 0);
+  var dfTotal = dfValues.reduce((sum, value) => sum + value[0], 0);
+  var cbTotal = cbValues.reduce((sum, value) => sum + value[0], 0);
+  var eeTotal = eeValues.reduce((sum, value) => sum + value[0], 0);
+
+  finalTimeSheet.getRange(17, 2).setValue(mbTotal); // B17
+  finalTimeSheet.getRange(17, 6).setValue(dfTotal); // F17
+  finalTimeSheet.getRange(33, 2).setValue(cbTotal); // B33
+  finalTimeSheet.getRange(33, 6).setValue(eeTotal); // F33
+
+  SpreadsheetApp.getUi().alert('Values and totals pushed to Final Time Sheet successfully.');
+}
+
+function findLastPayPeriodStartRow(data) {
+  var lastPayPeriodStartRow = -1;
+  for (var i = data.length - 1; i >= 0; i--) {
+    if (data[i][2] === 'S' || data[i][2] === 'W') {
+      lastPayPeriodStartRow = i;
+    }
+    if (lastPayPeriodStartRow !== -1 && (data[i][2] !== 'S' && data[i][2] !== 'W')) {
+      break;
+    }
+  }
+  return lastPayPeriodStartRow;
 }
