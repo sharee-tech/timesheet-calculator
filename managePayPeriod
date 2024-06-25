@@ -1,0 +1,111 @@
+function onOpen() {
+  var ui = SpreadsheetApp.getUi();
+  ui.createMenu('Timesheets')
+    .addItem('Generate New Pay Period', 'generateNewPayPeriod')
+    .addItem('Push to Timesheet', 'pushToTimesheet')
+    .addToUi();
+}
+
+function generateNewPayPeriod() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Pay Periods');
+  var ui = SpreadsheetApp.getUi();
+  var response = ui.prompt('Enter the starting date (MM/DD/YYYY):', ui.ButtonSet.OK_CANCEL);
+
+  if (response.getSelectedButton() == ui.Button.OK) {
+    var startDateStr = response.getResponseText();
+    var startDate = parseDate(startDateStr);
+    if (!startDate) {
+      ui.alert('Invalid date format. Please enter the date in MM/DD/YYYY format.');
+      return;
+    }
+    var dates = getPayPeriodDates(startDate);
+
+    var firstEmptyRow = findFirstEmptyRow(sheet);
+
+    dates.forEach(function(date) {
+      var day = date.getDay() === 0 ? 'S' : 'W'; // 'S' for Sunday, 'W' for Wednesday
+      var dateFormatted = Utilities.formatDate(date, Session.getScriptTimeZone(), 'MM/dd/yyyy');
+
+      var newRow = [null, null, day, dateFormatted, 'MB', 'DF', 'CB', 'EE'];
+      sheet.getRange(firstEmptyRow, 1, 1, 8).setValues([newRow]);
+      sheet.getRange(firstEmptyRow, 1, 1, 2).insertCheckboxes();
+      firstEmptyRow++;
+    });
+
+    // Save dates to property store
+    var properties = PropertiesService.getScriptProperties();
+    properties.setProperty('latestPayPeriodDates', JSON.stringify(dates.map(date => Utilities.formatDate(date, Session.getScriptTimeZone(), 'MM/dd/yyyy'))));
+
+    ui.alert('Pay period dates generated successfully.');
+  }
+}
+
+function parseDate(dateStr) {
+  var parts = dateStr.split('/');
+  if (parts.length !== 3) return null;
+  var month = parseInt(parts[0], 10) - 1;
+  var day = parseInt(parts[1], 10);
+  var year = parseInt(parts[2], 10);
+  var date = new Date(year, month, day);
+  return isNaN(date.getTime()) ? null : date;
+}
+
+function getPayPeriodDates(startDate) {
+  var year = startDate.getFullYear();
+  var month = startDate.getMonth();
+  var day = startDate.getDate();
+  
+  var endDate;
+  if (day >= 26) {
+    endDate = new Date(year, month + 1, 10); // 26th to 10th of the next month
+  } else if (day <= 10) {
+    endDate = new Date(year, month, 10); // Continue until 10th of the same month
+  } else if (day >= 11 && day <= 25) {
+    endDate = new Date(year, month, 25); // 11th to 25th of the same month
+  }
+
+  var dates = [];
+  var currentDate = new Date(startDate);
+
+  while (currentDate <= endDate) { // Include the end date
+    if (currentDate.getDay() === 0 || currentDate.getDay() === 3) { // Sunday or Wednesday
+      dates.push(new Date(currentDate));
+    }
+    currentDate.setDate(currentDate.getDate() + 1);
+  }
+
+  return dates;
+}
+
+function findFirstEmptyRow(sheet) {
+  var data = sheet.getDataRange().getValues();
+  for (var row = 0; row < data.length; row++) {
+    if (data[row].join('') === '') {
+      return row + 1;
+    }
+  }
+  return data.length + 1;
+}
+
+function pushToTimesheet() {
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var finalTimeSheet = spreadsheet.getSheetByName('Final Time Sheet');
+
+  // Get dates from property store
+  var properties = PropertiesService.getScriptProperties();
+  var dates = JSON.parse(properties.getProperty('latestPayPeriodDates') || '[]');
+
+  if (dates.length === 0) {
+    SpreadsheetApp.getUi().alert('No pay period data found.');
+    return;
+  }
+
+  // Insert dates into Final Time Sheet in multiple locations
+  var formattedDates = dates.map(date => [date]);
+  finalTimeSheet.getRange(8, 1, formattedDates.length, 1).setValues(formattedDates);
+  finalTimeSheet.getRange(8, 5, formattedDates.length, 1).setValues(formattedDates);
+  finalTimeSheet.getRange(24, 1, formattedDates.length, 1).setValues(formattedDates);
+  finalTimeSheet.getRange(24, 5, formattedDates.length, 1).setValues(formattedDates);
+
+  SpreadsheetApp.getUi().alert('Dates pushed to Final Time Sheet successfully.');
+}
