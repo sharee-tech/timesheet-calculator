@@ -1,0 +1,217 @@
+function onOpen() {
+  var ui = SpreadsheetApp.getUi();
+  ui.createMenu('Timesheets')
+    .addItem('Generate New Pay Period', 'generateNewPayPeriod')
+    .addItem('Push to Timesheet', 'pushToTimesheet')
+    .addItem('Save Timesheet', 'saveTimesheet')
+    .addToUi();
+}
+
+function generateNewPayPeriod() {
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var payPeriodsSheet = spreadsheet.getSheetByName('Pay Periods');
+  var finalTimeSheet = spreadsheet.getSheetByName('Final Time Sheet');
+  var ui = SpreadsheetApp.getUi();
+  var response = ui.prompt('Enter the starting date (MM/DD/YYYY):', ui.ButtonSet.OK_CANCEL);
+
+  if (response.getSelectedButton() == ui.Button.OK) {
+    var startDateStr = response.getResponseText();
+    var startDate = parseDate(startDateStr);
+    if (!startDate) {
+      ui.alert('Invalid date format. Please enter the date in MM/DD/YYYY format.');
+      return;
+    }
+
+    // Delete any dates saved to the script properties
+    var properties = PropertiesService.getScriptProperties();
+    properties.deleteProperty('latestPayPeriodDates');
+
+    // Clear specified cells in the Final Time Sheet tab
+    finalTimeSheet.getRange('A8:A16').clearContent();
+    finalTimeSheet.getRange('B8:B16').clearContent();
+    finalTimeSheet.getRange('E8:E16').clearContent();
+    finalTimeSheet.getRange('F8:F16').clearContent();
+    finalTimeSheet.getRange('A24:A32').clearContent();
+    finalTimeSheet.getRange('B24:B32').clearContent();
+    finalTimeSheet.getRange('E24:E32').clearContent();
+    finalTimeSheet.getRange('F24:F32').clearContent();
+
+    var dates = getPayPeriodDates(startDate);
+    var firstEmptyRow = findFirstEmptyRow(payPeriodsSheet);
+
+    dates.forEach(function(date) {
+      var day = date.getDay() === 0 ? 'S' : 'W'; // 'S' for Sunday, 'W' for Wednesday
+      var dateFormatted = Utilities.formatDate(date, Session.getScriptTimeZone(), 'MM/dd/yyyy');
+
+      var newRow = [null, null, day, dateFormatted, 'MB', 'DF', 'CB', 'EE'];
+      payPeriodsSheet.getRange(firstEmptyRow, 1, 1, 8).setValues([newRow]);
+      payPeriodsSheet.getRange(firstEmptyRow, 1, 1, 2).insertCheckboxes();
+      firstEmptyRow++;
+    });
+
+    // Insert dates into Final Time Sheet in multiple locations
+    var formattedDates = dates.map(date => [Utilities.formatDate(date, Session.getScriptTimeZone(), 'MM/dd/yyyy')]);
+    finalTimeSheet.getRange(8, 1, formattedDates.length, 1).setValues(formattedDates);
+    finalTimeSheet.getRange(8, 5, formattedDates.length, 1).setValues(formattedDates);
+    finalTimeSheet.getRange(24, 1, formattedDates.length, 1).setValues(formattedDates);
+    finalTimeSheet.getRange(24, 5, formattedDates.length, 1).setValues(formattedDates);
+
+    // Save dates to property store
+    properties.setProperty('latestPayPeriodDates', JSON.stringify(dates.map(date => Utilities.formatDate(date, Session.getScriptTimeZone(), 'MM/dd/yyyy'))));
+
+    ui.alert('Pay period dates generated and added to Final Time Sheet successfully.');
+  }
+}
+
+function parseDate(dateStr) {
+  var parts = dateStr.split('/');
+  if (parts.length !== 3) return null;
+  var month = parseInt(parts[0], 10) - 1;
+  var day = parseInt(parts[1], 10);
+  var year = parseInt(parts[2], 10);
+  var date = new Date(year, month, day);
+  return isNaN(date.getTime()) ? null : date;
+}
+
+function getPayPeriodDates(startDate) {
+  var year = startDate.getFullYear();
+  var month = startDate.getMonth();
+  var day = startDate.getDate();
+  
+  var endDate;
+  if (day >= 26) {
+    endDate = new Date(year, month + 1, 10); // 26th to 10th of the next month
+  } else if (day <= 10) {
+    endDate = new Date(year, month, 10); // Continue until 10th of the same month
+  } else if (day >= 11 && day <= 25) {
+    endDate = new Date(year, month, 25); // 11th to 25th of the same month
+  }
+
+  var dates = [];
+  var currentDate = new Date(startDate);
+
+  while (currentDate <= endDate) { // Include the end date
+    if (currentDate.getDay() === 0 || currentDate.getDay() === 3) { // Sunday or Wednesday
+      dates.push(new Date(currentDate));
+    }
+    currentDate.setDate(currentDate.getDate() + 1);
+  }
+
+  return dates;
+}
+
+function findFirstEmptyRow(sheet) {
+  var data = sheet.getDataRange().getValues();
+  for (var row = 0; row < data.length; row++) {
+    if (data[row].join('') === '') {
+      return row + 1;
+    }
+  }
+  return data.length + 1;
+}
+
+function pushToTimesheet() {
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var payPeriodsSheet = spreadsheet.getSheetByName('Pay Periods');
+  var finalTimeSheet = spreadsheet.getSheetByName('Final Time Sheet');
+
+  // Get dates from property store
+  var properties = PropertiesService.getScriptProperties();
+  var dates = JSON.parse(properties.getProperty('latestPayPeriodDates') || '[]');
+
+  if (dates.length === 0) {
+    SpreadsheetApp.getUi().alert('No pay period data found.');
+    return;
+  }
+
+  // Get corresponding values from columns E, F, G, and H of Pay Periods tab
+  var data = payPeriodsSheet.getDataRange().getValues();
+  var lastPayPeriodStartRow = findLastPayPeriodStartRow(data);
+
+  if (lastPayPeriodStartRow === -1) {
+    SpreadsheetApp.getUi().alert('No pay period data found.');
+    return;
+  }
+
+  var mbValues = [];
+  var dfValues = [];
+  var cbValues = [];
+  var eeValues = [];
+
+  for (var i = lastPayPeriodStartRow; i < data.length; i++) {
+    if (data[i][2] === 'S' || data[i][2] === 'W') {
+      mbValues.push([data[i][4] === 'MB' ? 1 : 0]);
+      dfValues.push([data[i][5] === 'DF' ? 1 : 0]);
+      cbValues.push([data[i][6] === 'CB' ? 1 : 0]);
+      eeValues.push([data[i][7] === 'EE' ? 1 : 0]);
+    }
+  }
+
+  // Insert values into Final Time Sheet
+  finalTimeSheet.getRange(8, 2, mbValues.length, 1).setValues(mbValues);  // B8
+  finalTimeSheet.getRange(8, 6, dfValues.length, 1).setValues(dfValues);  // F8
+  finalTimeSheet.getRange(24, 2, cbValues.length, 1).setValues(cbValues); // B24
+  finalTimeSheet.getRange(24, 6, eeValues.length, 1).setValues(eeValues); // F24
+
+  SpreadsheetApp.getUi().alert('Values pushed to Final Time Sheet successfully.');
+}
+
+function findLastPayPeriodStartRow(data) {
+  var lastPayPeriodStartRow = -1;
+  for (var i = data.length - 1; i >= 0; i--) {
+    if (data[i][2] === 'S' || data[i][2] === 'W') {
+      lastPayPeriodStartRow = i;
+    }
+    if (lastPayPeriodStartRow !== -1 && (data[i][2] !== 'S' && data[i][2] !== 'W')) {
+      break;
+    }
+  }
+  return lastPayPeriodStartRow;
+}
+
+function saveTimesheet() {
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var finalTimeSheet = spreadsheet.getSheetByName('Final Time Sheet');
+  var properties = PropertiesService.getScriptProperties();
+  var dates = JSON.parse(properties.getProperty('latestPayPeriodDates') || '[]');
+  
+  if (dates.length === 0) {
+    SpreadsheetApp.getUi().alert('No pay period data found.');
+    return;
+  }
+  
+  var mostRecentDate = dates[dates.length - 1];
+  var formattedDate = mostRecentDate.replace(/\//g, '');
+  var fileName = `${formattedDate}-timesheet`;
+  
+  var folder = DriveApp.getFoldersByName('TimeSheets').next();
+  
+  // Create a copy of the spreadsheet and remove all sheets except "Final Time Sheet"
+  var tempSpreadsheet = spreadsheet.copy(fileName);
+  var sheets = tempSpreadsheet.getSheets();
+  for (var i = 0; i < sheets.length; i++) {
+    if (sheets[i].getName() !== 'Final Time Sheet') {
+      tempSpreadsheet.deleteSheet(sheets[i]);
+    }
+  }
+  
+  // Export the temp spreadsheet as PDF
+  var pdf = DriveApp.getFileById(tempSpreadsheet.getId()).getAs('application/pdf');
+  pdf.setName(fileName);
+  folder.createFile(pdf);
+  
+  // Delete the temp spreadsheet
+  DriveApp.getFileById(tempSpreadsheet.getId()).setTrashed(true);
+  
+  var subject = `Musicians Timesheet - ${mostRecentDate}`;
+  var body = `Hi Martha,\n\nPlease see attached timesheet for the pay period ending on ${mostRecentDate}.\n\nThanks,\nSharee`;
+  
+  MailApp.sendEmail({
+    to: 'sthompson@secondpres.org',
+    subject: subject,
+    body: body,
+    attachments: [pdf]
+  });
+  
+  SpreadsheetApp.getUi().alert('Timesheet saved and emailed successfully.');
+}
